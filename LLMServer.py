@@ -222,6 +222,16 @@ def chat_with_llm(prompt, message_id, chat_body):
     except Exception as e:
         chat_body = _get_chat_body()
         print(e)
+        try:
+            text = response_e.text
+            if '已停止' in text[:3]:
+                buttons = buttons_e.find_elements(By.CLASS_NAME,
+                                                  "ds-icon-button.ds-icon-button--m.ds-icon-button--sizing-container")
+                buttons[1].click()
+                time.sleep(OPERATION_TIMEOUT)
+                chat_with_llm(prompt, message_id, chat_body)
+        except Exception as e:
+            print(e)
     try:
         continue_button_e = buttons_e.find_element(By.CLASS_NAME,
                                                    "ds-atom-button.ds-basic-button.ds-basic-button--outlined")
