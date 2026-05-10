@@ -19,37 +19,25 @@ from LLMClient import html_to_markdown
 import zmq
 import pyperclip
 from datetime import datetime
+from filelock import FileLock
+LOCK_FILE = r"C:\Users\Administrator\AppData\Local\Temp\clipboard.lock"  # Windows
 
 SOCKET_PORT = 7777
 PAGE_LOAD_TIMEOUT = 60
 OPERATION_TIMEOUT = 1
 RESPONSE_TIMEOUT = 600
 RETRY_INTERNAL = 60
-chrome_driver:webdriver.chrome.webdriver.WebDriver = None
+chrome_driver:webdriver.chrome.webdriver.WebDriver
 
 def init_webdriver():
     global chrome_driver
     # 配置Chrome选项（保留用户数据，避免重复登录）
     chrome_options = webdriver.ChromeOptions()
-    # 可选：注释掉下面一行，改为可视化模式（方便首次登录）
-    # chrome_options.add_argument("--headless=new")  # 无头模式（后台运行）
-    # chrome_options.add_argument("--user-data-dir=./chrome_user_data")  # 保存登录状态
-    # chrome_options.add_argument("--disable-blink-features=AutomationControlled")  # 避免被检测为自动化工具
-    # chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
-    # chrome_options.add_experimental_option('useAutomationExtension', False)
-    # chrome_options.add_argument("--window-size=1920,1080")
-    # chrome_options.add_argument("--window-position=0,0")
-    # chrome_options.add_argument("--start-maximized")
-    # chrome_options.add_argument("--disable-background-timer-throttling")
-    # chrome_options.add_argument("--disable-backgrounding-occluded-windows")
-    # chrome_options.add_argument("--disable-renderer-backgrounding")
-    # chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
-    # chrome_options.add_argument("--disable-features=VizDisplayCompositor")
 
     # 初始化Chrome驱动
     chrome_driver = webdriver.Chrome(
         # service=Service(ChromeDriverManager().install()),
-        service=Service(executable_path=r"C:\tools\webdriver\chromedriver_145.exe"),
+        service=Service(executable_path=r"C:\tools\webdriver\chromedriver_148.exe"), # C:\Users\Administrator\.cache\selenium\chromedriver\win64
         options=chrome_options
     )
     chrome_driver.implicitly_wait(10)  # 全局隐式等待
@@ -77,8 +65,10 @@ def login_llm():
     login_btn_e.click()
 
 def new_chat():
-    new_chat_e = WebDriverWait(chrome_driver, PAGE_LOAD_TIMEOUT).until(EC.element_to_be_clickable(
-        (By.CSS_SELECTOR, ".ds-icon-button.ds-icon-button--l.ds-icon-button--sizing-container:nth-of-type(3)")))
+    new_chat_e = chrome_driver.find_elements(By.CLASS_NAME, "ds-icon-button.ds-icon-button--l.ds-icon-button--sizing-container")[2]
+    if not new_chat_e.is_displayed():
+        new_chat_e = chrome_driver.find_elements(By.CLASS_NAME,"ds-icon-button.ds-icon-button--xl.ds-icon-button--sizing-container")[1]
+
     new_chat_e.click()
     time.sleep(OPERATION_TIMEOUT)
 
@@ -99,6 +89,7 @@ def set_llm(deepthink=True, internet=True):
         time.sleep(OPERATION_TIMEOUT)
 
 def _get_chat_body():
+    print('获取chatbody')
     interact_items_e = WebDriverWait(chrome_driver, PAGE_LOAD_TIMEOUT).until(
         EC.presence_of_element_located((By.CLASS_NAME, "ds-virtual-list-visible-items")))
     return interact_items_e
@@ -117,87 +108,100 @@ def prepare_chat(is_new_chat=True):
     return message_id, interact_items_e
 
 def check_staus(recheck=False):
-    # if chat_body is None:
     max_key = 0
     try:
-        # chat_body = _get_chat_body()
+        print('获取含key元素')
         item_key_elements = chrome_driver.find_elements(By.CSS_SELECTOR, f"[data-virtual-list-item-key]")
     except Exception as e:
         print(e, 'no data-virtual-list-item-key elements')
         return max_key
-    # min_key = 9999
+
     for element in item_key_elements:
         key = int(element.get_attribute("data-virtual-list-item-key"))
         max_key = key if abs(max_key) < abs(key) else max_key
-
+    print(f'max_key = {max_key}')
     if max_key < 0:
         try:
+            print('处理重试异常')
             retry_e = chrome_driver.find_element(By.CLASS_NAME,
                                                  "ds-icon-button.ds-icon-button--s.ds-icon-button--sizing-container")
             sleep(RESPONSE_TIMEOUT/2)
             retry_e.click()
-            time.sleep(OPERATION_TIMEOUT)
+            time.sleep(RETRY_INTERNAL)
             max_key = check_staus(True)
         except Exception as e:
             print(e)
             if not recheck:
+                print('获取scrollable元素')
                 list_e = chrome_driver.find_element(By.CLASS_NAME, "ds-virtual-list")
                 chrome_driver.execute_script("arguments[0].scrollTop = arguments[0].scrollHeight", list_e)
                 time.sleep(OPERATION_TIMEOUT)
                 max_key = check_staus(True)
             if max_key < 0:
-                print(f'May get limited access. {datetime.now().strftime("%d-%H%M%S")}')
+                try:
+                    if '请开启新对话' in chrome_driver.find_element(By.CLASS_NAME, f"ds-virtual-list-visible-items").text[-15:]:
+                        print('达到对话长度上限')
+                        return max_key
+                except Exception as e:
+                    print(e)
+
+                print(f'May still loading. {datetime.now().strftime("%d-%H%M%S")}')
                 with open(f'./llm_response/chat body {datetime.now().strftime("%H%M%S")}.html', 'w',
                           encoding='utf8') as f:
                     f.write(chrome_driver.find_element(By.CLASS_NAME, "ds-virtual-list-visible-items").get_property(
                         "innerHTML"))
-                for i in range(1, 3):
-                    time.sleep(10)
-                    with open(f'./llm_response/chat body {datetime.now().strftime("%H%M%S")}.html', 'w',
-                              encoding='utf8') as f:
-                        f.write(chrome_driver.find_element(By.CLASS_NAME, "ds-virtual-list-visible-items").get_property(
-                            "innerHTML"))
-
+                time.sleep(RETRY_INTERNAL)
+                max_key = check_staus(True)
+    print(f'返回 max_key = {max_key}')
     return max_key
 
 
-def send_prompt(prompt, last_message_id, chat_body):
-    limited_chat = False
-
+def send_prompt(prompt):
+    print('获取输入框元素')
     chat_input_e = WebDriverWait(chrome_driver, PAGE_LOAD_TIMEOUT).until(EC.presence_of_element_located((By.XPATH, "//textarea[contains(@placeholder, '发送消息')]")))
     # chat_input_e.send_keys(prompt)  #无法处理换行
     # chat_input_e.clear()  #无效
     chat_input_e.click()
     time.sleep(OPERATION_TIMEOUT)
-    pyperclip.copy(prompt)
-    ActionChains(chrome_driver).key_down(Keys.CONTROL).send_keys('a').send_keys('v').key_up(Keys.CONTROL).perform()
+
+    old_content = pyperclip.paste()
+    with FileLock(LOCK_FILE, timeout=10):
+        pyperclip.copy(prompt)
+        time.sleep(0.1)
+        ActionChains(chrome_driver).key_down(Keys.CONTROL).send_keys('a').send_keys('v').key_up(Keys.CONTROL).perform()
+        time.sleep(0.1)
+        pyperclip.copy(old_content)
+
     time.sleep(OPERATION_TIMEOUT)
     chat_input_e.send_keys(Keys.ENTER)
     time.sleep(OPERATION_TIMEOUT)
-    limited_message_id = -(last_message_id + 2)
+
     time.sleep(10)
 
-    return (last_message_id + 2), chat_body, limited_chat
 
-def chat_with_llm(prompt, message_id, chat_body):
+def chat_with_llm(message_id):
     response_content = 'failed'
 
     try:
-        # if chat_body is None:
         chat_body = _get_chat_body()
+        print(f'获取message id={message_id} 的元素，{RESPONSE_TIMEOUT}s后超时')
         response_e = WebDriverWait(chat_body, RESPONSE_TIMEOUT).until(
             EC.presence_of_element_located((By.CSS_SELECTOR, f"[data-virtual-list-item-key='{message_id}']")))
-
+        print(f'获取ds-flex，{RESPONSE_TIMEOUT}s后超时')
         buttons_e = WebDriverWait(response_e, RESPONSE_TIMEOUT).until(EC.presence_of_element_located((By.CLASS_NAME, "ds-flex")))
-
+        print(f'获取文本元素，{RESPONSE_TIMEOUT}s后超时')
         response_content_e = WebDriverWait(response_e, RESPONSE_TIMEOUT).until(EC.presence_of_element_located((By.CSS_SELECTOR, ".ds-message>.ds-markdown")))
         # response_content = response_content_e.get_attribute('outerHTML')
         # response_content = response_content_e.get_property('outerHTML')
+        list_e = chrome_driver.find_element(By.CLASS_NAME, "ds-virtual-list")
+        chrome_driver.execute_script("arguments[0].scrollTop = arguments[0].scrollHeight", list_e)
+        time.sleep(OPERATION_TIMEOUT)
+
+        chrome_driver.save_screenshot(f'./llm_response/chat_with_llm.png')
         last_content = response_e.get_property('innerHTML')
 
         while True:
             time.sleep(10)
-            #response_e = chat_body.find_element(By.CSS_SELECTOR, f"[data-virtual-list-item-key='{new_message_id}']")
             content = response_e.get_property('innerHTML')
             #有可能在思考，导致response_content_e一直是空的，所以要用response_e来做比较
             with open(f'./llm_response/llm response new.html', 'w',
@@ -208,40 +212,43 @@ def chat_with_llm(prompt, message_id, chat_body):
                 f.write(last_content)
 
             if last_content == content:
-                #response_content_e = response_e.find_element(By.CSS_SELECTOR, ".ds-message>.ds-markdown")
+                print('前后两次获取的内容一致')
                 response_content = html_to_markdown(response_content_e.get_property('innerHTML'))
                 if len(response_content) == 0:
+                    print('有效内容为空')
                     continue
                 break
             else:
+                print('前后两次获取的内容不一致，内容生成中')
                 last_content = content
 
         response_content = response_content_e.get_property('innerHTML')
         with open(f'./llm_response/llm response {datetime.now().strftime("%H%M%S")}.html', 'w', encoding='utf8') as f:
             f.write(response_content)
     except Exception as e:
-        chat_body = _get_chat_body()
         print(e)
         try:
             text = response_e.text
             if '已停止' in text[:3]:
+                print('处理思考已停止异常')
                 buttons = buttons_e.find_elements(By.CLASS_NAME,
                                                   "ds-icon-button.ds-icon-button--m.ds-icon-button--sizing-container")
                 buttons[1].click()
                 time.sleep(OPERATION_TIMEOUT)
-                chat_with_llm(prompt, message_id, chat_body)
+                # chat_with_llm(message_id) message id 会改变
         except Exception as e:
             print(e)
     try:
+        print('处理长输出异常，点击继续输出')
         continue_button_e = buttons_e.find_element(By.CLASS_NAME,
                                                    "ds-atom-button.ds-basic-button.ds-basic-button--outlined")
         continue_button_e.click()
         time.sleep(OPERATION_TIMEOUT)
-        chat_with_llm(prompt, message_id, chat_body)
+        chat_with_llm(message_id)
     except Exception as e:
         print(e)
 
-    return response_content, chat_body
+    return response_content
 
 
 if __name__ == '__main__':
@@ -254,14 +261,11 @@ if __name__ == '__main__':
 
     init_webdriver()
     login_llm()
-    # set_llm()
-    # message_id, chat_body = prepare_chat()
     chat_body = None
     need_init = True
     while True:
         if need_init:
             set_llm()
-            # message_id, chat_body = prepare_chat()
             need_init = False
 
         if socket.poll(None, zmq.POLLIN):
@@ -271,6 +275,11 @@ if __name__ == '__main__':
             need_send = 'reget' not in cmd
             response_content = 'failed'
             try:
+                if 'new chat' in cmd:
+                    new_chat()
+                    need_init = True
+                    socket.send_json(json.dumps({'response': 'done'}))
+                    continue
                 while True:
                     message_id = check_staus()
                     if message_id < 0 or (message_id == 0 and 'complete prompt' not in cmd):
@@ -279,39 +288,12 @@ if __name__ == '__main__':
                         need_init = True
                         break
                     if need_send:
-                        message_id, chat_body, limited = send_prompt(prompt, message_id, chat_body)
+                        send_prompt(prompt)
                         need_send = False
                         continue
-                    response_content, chat_body = chat_with_llm(prompt, message_id, chat_body)
+                    response_content = chat_with_llm(message_id)
                     break
-                #
-                # if message_id == 0 and 'complete prompt' not in cmd:
-                #     response_content = 'new chat'
-                #     need_init = True
-                #     continue
 
-
-                    #
-                    # else:
-                    #     if 'reget' in cmd:
-                    #         response_content, chat_body = chat_with_llm(prompt, message_id, chat_body)
-                    #     else:
-                    #         message_id, chat_body, limited = send_prompt(prompt, message_id, chat_body)
-                    #         if limited:
-                    #             response_content = 'new chat'
-                    #             new_chat()
-                    #             need_init = True
-                    #             continue
-                    #             # set_llm()
-                    #             # message_id, chat_body = prepare_chat()
-                    #             # chat_body, limited = send_prompt(prompt, message_id, chat_body)
-                    #         else:
-                    #             response_content, chat_body = chat_with_llm(prompt, message_id, chat_body)
-                    #             break
             except Exception as e:
                 print(e)
-            # socket.send_json(chat_with_llm(request))
             socket.send_json(json.dumps({'response': response_content}))
-            # if message_id >= 100:
-            #     break
-        # new_chat()
