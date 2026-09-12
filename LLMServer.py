@@ -17,6 +17,7 @@ import io
 from PIL import Image
 import cv2
 import numpy as np
+import cairosvg
 
 from LLMClient import html_to_markdown
 
@@ -26,13 +27,14 @@ from datetime import datetime
 from filelock import FileLock
 LOCK_FILE = r"C:\Users\Administrator\AppData\Local\Temp\clipboard.lock"  # Windows
 
-SOCKET_PORT = 9991
+SOCKET_PORT = 1111
 PAGE_LOAD_TIMEOUT = 60
 OPERATION_TIMEOUT = 1
 RESPONSE_TIMEOUT = 600
 RETRY_INTERNAL = 60
 chrome_driver:webdriver.chrome.webdriver.WebDriver
 
+title_map = {7777:'1Server', 9992:'2Server', 9993:'3Server', 9994:'4Server', 6666:'CorrTuning Server', 9981:'Super_Server', 8888:'DB_Server', SOCKET_PORT:'test_Server'}
 def init_webdriver():
     global chrome_driver
     # 配置Chrome选项（保留用户数据，避免重复登录）
@@ -40,12 +42,27 @@ def init_webdriver():
 
     # 初始化Chrome驱动
     chrome_driver = webdriver.Chrome(
-        # service=Service(ChromeDriverManager().install()),
-        service=Service(executable_path=r"C:\tools\webdriver\chromedriver_148.exe"), # C:\Users\Administrator\.cache\selenium\chromedriver\win64
+        #service=Service(ChromeDriverManager().install()),
+        service=Service(executable_path=r"C:\tools\webdriver\chromedriver_151.exe"), # C:\Users\Administrator\.cache\selenium\chromedriver\win64
         options=chrome_options
     )
     chrome_driver.implicitly_wait(10)  # 全局隐式等待
     WebDriverWait(chrome_driver, PAGE_LOAD_TIMEOUT, poll_frequency=1).until(lambda driver: True)
+
+def set_title_size(port=None):
+    size = chrome_driver.get_window_size()
+    width = size["width"]
+    height = size["height"]
+    if size.get('width', 0) < 780:
+        width = 780
+    if size.get('height', 0) < 500:
+        height = 500
+    chrome_driver.set_window_size(width, height)
+    if port in title_map:
+        try:
+            chrome_driver.execute_script(f"document.title = '{title_map[port]}'")
+        except Exception as e:
+            pass
 
 def find_element_by_text(text, precise=True):
     es = chrome_driver.find_elements(By.XPATH, f"//*[contains(text(),{text})]")
@@ -58,10 +75,71 @@ def find_element_by_text(text, precise=True):
     return None
 
 def find_element_by_svg(target_svg):
+    print(f'Finding {target_svg}')
+    set_title_size()
+    dpr = chrome_driver.execute_script("return window.devicePixelRatio")  #切换显示器
+    MATCH_THRESHOLD = 0.75  # 匹配特征点阈值（越大越严格，图标小设5-15即可）
+    COMFIRM_THRESHOLD = 0.99
+
+    template_img = cv2.imread(target_svg, cv2.IMREAD_GRAYSCALE)
+
+    try:
+        list_e = chrome_driver.find_element(By.CLASS_NAME, "ds-virtual-list")
+        chrome_driver.execute_script("arguments[0].scrollTop = arguments[0].scrollHeight", list_e)
+    except Exception as e:
+        pass
+
+    full_page_screenshot_bytes = chrome_driver.get_screenshot_as_png()
+    full_img = Image.open(io.BytesIO(full_page_screenshot_bytes)).convert('L')
+    # full_img.save('test_full_image.png')
+    all_svg_elements = chrome_driver.find_elements(By.XPATH, '//*[local-name()="svg"]')
+
+    match_results = []
+    for svg in all_svg_elements:
+        if not svg.is_displayed() or svg.location['x'] < 0 or svg.location['y'] < 0:
+            continue
+        xy1 = round(svg.location['x']*dpr), round(svg.location['y']*dpr)
+        xy2 = xy1[0]+svg.size['width']*dpr, xy1[1]+svg.size['height']*dpr
+        image = full_img.crop(xy1+xy2)
+        current_img = np.array(image)
+        # image.save(f'svg{xy1}.png')
+        # ===================== 模板匹配核心（无特征点，永不报错） =====================
+        # 缩放模板适配当前SVG大小
+        current_height, current_width = current_img.shape[:2]
+        scaled_template = cv2.resize(template_img, (current_width, current_height))
+
+        # 计算匹配度
+        result = cv2.matchTemplate(current_img, scaled_template, cv2.TM_CCOEFF_NORMED)
+        similarity = cv2.minMaxLoc(result)[1]  # 相似度 0~1
+        match_results.append((svg, similarity))
+        # print(f"SVG {xy1} → 匹配相似度：{round(similarity, 2)}")
+        if similarity > COMFIRM_THRESHOLD:
+            print(f'{xy1}高相似度：{similarity}, 直接返回')
+            return svg
+
+    # 5. 找到匹配度最高的SVG
+    target_svg = None
+    if match_results:
+        # 按匹配分数降序排序，取第一名
+        match_results.sort(key=lambda x: x[1], reverse=True)
+        best_svg, best_score = match_results[0]
+
+        if best_score >= MATCH_THRESHOLD:
+            print(f"\n✅ 找到目标SVG！最佳匹配分数：{best_score}")
+            target_svg = best_svg
+        else:
+            print(f"\n❌ 匹配度不足（最低阈值：{MATCH_THRESHOLD}），未找到目标图形")
+
+    # 6. 对目标SVG执行操作（示例）
+    return target_svg
+
+
+def find_element_by_svg2(target_svg):
     # -------------------------- 【配置区：修改这里即可】 --------------------------
     # TEMPLATE_PATH = "svg_new.png"  # 你提前截好的目标SVG模板图
     print(f'Finding {target_svg}')
-    MATCH_THRESHOLD = 0.8  # 匹配特征点阈值（越大越严格，图标小设5-15即可）
+    MATCH_THRESHOLD = 0.75  # 匹配特征点阈值（越大越严格，图标小设5-15即可）
+    COMFIRM_THRESHOLD = 0.99
 
     template_img = cv2.imread(target_svg, cv2.IMREAD_GRAYSCALE)
     template_height, template_width = template_img.shape[:2]
@@ -69,6 +147,12 @@ def find_element_by_svg(target_svg):
     all_svg = chrome_driver.find_elements(By.XPATH, '//*[local-name()="svg"]')
     # 存储匹配结果：(SVG元素, 匹配分数)
     match_results = []
+    list_e = None
+    try:
+        list_e = chrome_driver.find_element(By.CLASS_NAME, "ds-virtual-list")
+    except Exception as e:
+        pass
+
     # 4. 遍历所有SVG，进行图像特征匹配
     for index, svg in enumerate(all_svg):
         # 跳过隐藏的SVG（避免空白图干扰）
@@ -80,11 +164,12 @@ def find_element_by_svg(target_svg):
             png_bytes = svg.screenshot_as_png  # SVG截图字节流
             image = Image.open(io.BytesIO(png_bytes)).convert('L')  # 转灰度图
             current_img = np.array(image)
+            # image.save(f'SVG{index + 1}.png', format='PNG')
 
             #screenshot_as_png会导致滑动条滚动，导致看不到retry按钮
-            list_e = chrome_driver.find_element(By.CLASS_NAME, "ds-virtual-list")
-            chrome_driver.execute_script("arguments[0].scrollTop = arguments[0].scrollHeight", list_e)
-            time.sleep(OPERATION_TIMEOUT/2)
+            if list_e is not None:
+                chrome_driver.execute_script("arguments[0].scrollTop = arguments[0].scrollHeight", list_e)
+                time.sleep(OPERATION_TIMEOUT/2)
 
             # ===================== 模板匹配核心（无特征点，永不报错） =====================
             # 缩放模板适配当前SVG大小
@@ -94,9 +179,11 @@ def find_element_by_svg(target_svg):
             # 计算匹配度
             result = cv2.matchTemplate(current_img, scaled_template, cv2.TM_CCOEFF_NORMED)
             similarity = cv2.minMaxLoc(result)[1]  # 相似度 0~1
-
             match_results.append((svg, similarity))
             print(f"SVG {index + 1} → 匹配相似度：{round(similarity, 2)}")
+            if similarity > COMFIRM_THRESHOLD:
+                print(f'高相似度：{similarity}, 直接返回')
+                return svg
 
         except Exception as e:
             print(f"SVG {index + 1} 处理失败：{str(e)}")
@@ -151,6 +238,9 @@ def new_chat():
     # new_chat_e = chrome_driver.find_elements(By.CLASS_NAME, "ds-icon-button.ds-icon-button--l.ds-icon-button--sizing-container")[2]
     # if not new_chat_e.is_displayed():
     #     new_chat_e = chrome_driver.find_elements(By.CLASS_NAME,"ds-icon-button.ds-icon-button--xl.ds-icon-button--sizing-container")[1]
+    chat_body = _get_chat_body()
+    if chat_body is None:
+        return
     new_chat_e = find_element_by_svg(r'./svg_new.png')
     new_chat_e.click()
     time.sleep(OPERATION_TIMEOUT)
@@ -172,9 +262,13 @@ def set_llm(deepthink=True, internet=True):
         time.sleep(OPERATION_TIMEOUT)
 
 def _get_chat_body():
-    print('获取chatbody')
-    interact_items_e = WebDriverWait(chrome_driver, PAGE_LOAD_TIMEOUT).until(
-        EC.presence_of_element_located((By.CLASS_NAME, "ds-virtual-list-visible-items")))
+    interact_items_e = None
+    try:
+        interact_items_e = WebDriverWait(chrome_driver, PAGE_LOAD_TIMEOUT).until(
+            EC.presence_of_element_located((By.CLASS_NAME, "ds-virtual-list-visible-items")))
+        print('获取到chatbody')
+    except Exception as e:
+        print('未获取到chatbody，可能处于新页面')
     return interact_items_e
 
 def prepare_chat(is_new_chat=True):
@@ -315,17 +409,27 @@ def chat_with_llm(message_id):
             text = response_e.text
             if '已停止' in text[:3]:
                 print('尝试处理思考已停止异常')
-                buttons = buttons_e.find_elements(By.CLASS_NAME,
-                                                  "ds-icon-button.ds-icon-button--m.ds-icon-button--sizing-container")
-                buttons[1].click()
+                # buttons = buttons_e.find_elements(By.CLASS_NAME,
+                #                                   "ds-icon-button.ds-icon-button--m.ds-icon-button--sizing-container")
+                # buttons[1].click()
+
+                button = find_element_by_svg(r'./svg_retry2.png')
+                button.click()
                 time.sleep(OPERATION_TIMEOUT)
                 # chat_with_llm(message_id) message id 会改变
         except Exception as e:
             print('无思考已停止异常')
+        try:
+            retry_btn = chrome_driver.find_element(By.XPATH, '//span[@class="ds-button__content" and contains(text(),"重试")]')
+            retry_btn.click()
+            time.sleep(OPERATION_TIMEOUT)
+        except Exception as e:
+            print('无重试异常')
     try:
         print('尝试处理长输出异常，点击继续输出')
-        continue_button_e = buttons_e.find_element(By.CLASS_NAME,
-                                                   "ds-atom-button.ds-basic-button.ds-basic-button--outlined")
+        # continue_button_e = buttons_e.find_element(By.CLASS_NAME,
+        #                                            "ds-atom-button.ds-basic-button.ds-basic-button--outlined")
+        continue_button_e = buttons_e.find_element(By.XPATH, "//*[text()='继续生成']")
         continue_button_e.click()
         time.sleep(OPERATION_TIMEOUT)
         chat_with_llm(message_id)
@@ -348,6 +452,7 @@ if __name__ == '__main__':
     chat_body = None
     need_init = True
     while True:
+        set_title_size(port)
         if need_init:
             set_llm()
             need_init = False

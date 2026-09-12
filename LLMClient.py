@@ -6,7 +6,7 @@ import html2text
 # from HtmlParser import html_to_markdown
 
 # from LLMServer import SOCKET_PORT
-SOCKET_PORT = 7777
+SOCKET_PORT = 1111
 
 
 def html_to_markdown(html_content):
