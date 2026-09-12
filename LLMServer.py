@@ -1,4 +1,5 @@
 import json
+import os
 import sys
 import time
 from code import interact
@@ -25,7 +26,13 @@ import zmq
 import pyperclip
 from datetime import datetime
 from filelock import FileLock
+
+from logger import init_logger, logger
+
 LOCK_FILE = r"C:\Users\Administrator\AppData\Local\Temp\clipboard.lock"  # Windows
+
+init_logger(os.path.splitext(os.path.basename(__file__))[0])
+
 
 SOCKET_PORT = 1111
 PAGE_LOAD_TIMEOUT = 60
@@ -35,6 +42,15 @@ RETRY_INTERNAL = 60
 chrome_driver:webdriver.chrome.webdriver.WebDriver
 
 title_map = {7777:'1Server', 9992:'2Server', 9993:'3Server', 9994:'4Server', 6666:'CorrTuning Server', 9981:'Super_Server', 8888:'DB_Server', SOCKET_PORT:'test_Server'}
+
+from enum import Enum
+
+class Status(Enum):
+    OK = 1
+    NO_REPLY = 0      # 没有回复
+    NEED_NEW_CHAT = -1 # 需要新建对话
+    NEED_RESEND = -2   # 需要重发
+
 def init_webdriver():
     global chrome_driver
     # 配置Chrome选项（保留用户数据，避免重复登录）
@@ -75,7 +91,7 @@ def find_element_by_text(text, precise=True):
     return None
 
 def find_element_by_svg(target_svg):
-    print(f'Finding {target_svg}')
+    logger.info(f'Finding {target_svg}')
     set_title_size()
     dpr = chrome_driver.execute_script("return window.devicePixelRatio")  #切换显示器
     MATCH_THRESHOLD = 0.75  # 匹配特征点阈值（越大越严格，图标小设5-15即可）
@@ -114,7 +130,7 @@ def find_element_by_svg(target_svg):
         match_results.append((svg, similarity))
         # print(f"SVG {xy1} → 匹配相似度：{round(similarity, 2)}")
         if similarity > COMFIRM_THRESHOLD:
-            print(f'{xy1}高相似度：{similarity}, 直接返回')
+            logger.info(f'{xy1}高相似度：{similarity}, 直接返回')
             return svg
 
     # 5. 找到匹配度最高的SVG
@@ -125,10 +141,10 @@ def find_element_by_svg(target_svg):
         best_svg, best_score = match_results[0]
 
         if best_score >= MATCH_THRESHOLD:
-            print(f"\n✅ 找到目标SVG！最佳匹配分数：{best_score}")
+            logger.info(f"\n✅ 找到目标SVG！最佳匹配分数：{best_score}")
             target_svg = best_svg
         else:
-            print(f"\n❌ 匹配度不足（最低阈值：{MATCH_THRESHOLD}），未找到目标图形")
+            logger.info(f"\n❌ 匹配度不足（最低阈值：{MATCH_THRESHOLD}），未找到目标图形")
 
     # 6. 对目标SVG执行操作（示例）
     return target_svg
@@ -137,7 +153,7 @@ def find_element_by_svg(target_svg):
 def find_element_by_svg2(target_svg):
     # -------------------------- 【配置区：修改这里即可】 --------------------------
     # TEMPLATE_PATH = "svg_new.png"  # 你提前截好的目标SVG模板图
-    print(f'Finding {target_svg}')
+    logger.info(f'Finding {target_svg}')
     MATCH_THRESHOLD = 0.75  # 匹配特征点阈值（越大越严格，图标小设5-15即可）
     COMFIRM_THRESHOLD = 0.99
 
@@ -180,13 +196,13 @@ def find_element_by_svg2(target_svg):
             result = cv2.matchTemplate(current_img, scaled_template, cv2.TM_CCOEFF_NORMED)
             similarity = cv2.minMaxLoc(result)[1]  # 相似度 0~1
             match_results.append((svg, similarity))
-            print(f"SVG {index + 1} → 匹配相似度：{round(similarity, 2)}")
+            logger.info(f"SVG {index + 1} → 匹配相似度：{round(similarity, 2)}")
             if similarity > COMFIRM_THRESHOLD:
-                print(f'高相似度：{similarity}, 直接返回')
+                logger.info(f'高相似度：{similarity}, 直接返回')
                 return svg
 
         except Exception as e:
-            print(f"SVG {index + 1} 处理失败：{str(e)}")
+            logger.info(f"SVG {index + 1} 处理失败：{str(e)}")
 
     # 5. 找到匹配度最高的SVG
     target_svg = None
@@ -196,10 +212,10 @@ def find_element_by_svg2(target_svg):
         best_svg, best_score = match_results[0]
 
         if best_score >= MATCH_THRESHOLD:
-            print(f"\n✅ 找到目标SVG！最佳匹配分数：{best_score}")
+            logger.info(f"\n✅ 找到目标SVG！最佳匹配分数：{best_score}")
             target_svg = best_svg
         else:
-            print(f"\n❌ 匹配度不足（最低阈值：{MATCH_THRESHOLD}），未找到目标图形")
+            logger.info(f"\n❌ 匹配度不足（最低阈值：{MATCH_THRESHOLD}），未找到目标图形")
 
     # 6. 对目标SVG执行操作（示例）
     return target_svg
@@ -266,9 +282,9 @@ def _get_chat_body():
     try:
         interact_items_e = WebDriverWait(chrome_driver, PAGE_LOAD_TIMEOUT).until(
             EC.presence_of_element_located((By.CLASS_NAME, "ds-virtual-list-visible-items")))
-        print('获取到chatbody')
+        logger.info('获取到chatbody')
     except Exception as e:
-        print('未获取到chatbody，可能处于新页面')
+        logger.info('未获取到chatbody，可能处于新页面')
     return interact_items_e
 
 def prepare_chat(is_new_chat=True):
@@ -287,55 +303,79 @@ def prepare_chat(is_new_chat=True):
 def check_staus(recheck=False):
     max_key = 0
     try:
-        print('获取含key元素')
+        logger.info('获取含key元素')
         item_key_elements = chrome_driver.find_elements(By.CSS_SELECTOR, f"[data-virtual-list-item-key]")
     except Exception as e:
-        print('no data-virtual-list-item-key elements，返回0')
-        return max_key
+        logger.info('no data-virtual-list-item-key elements，返回0')
+        return Status.NO_REPLY, max_key
 
     for element in item_key_elements:
         key = int(element.get_attribute("data-virtual-list-item-key"))
         max_key = key if abs(max_key) < abs(key) else max_key
-    print(f'max_key = {max_key}')
+    logger.info(f'max_key = {max_key}')
     if max_key < 0:
+        # try:
         try:
-            print('处理重试异常')
-            # retry_e = chrome_driver.find_element(By.CLASS_NAME,
-            #                                      "ds-icon-button.ds-icon-button--s.ds-icon-button--sizing-container")
-            retry_e = find_element_by_svg(r'./svg_retry.png')
-            sleep(RESPONSE_TIMEOUT/2)
-            retry_e.click()
-            time.sleep(RETRY_INTERNAL)
-            max_key = check_staus(True)
+            list_e = chrome_driver.find_element(By.CLASS_NAME, "ds-virtual-list")
+            chrome_driver.execute_script("arguments[0].scrollTop = arguments[0].scrollHeight", list_e)
         except Exception as e:
-            print('无重试异常')
-            if not recheck:
-                print('获取scrollable元素')
-                list_e = chrome_driver.find_element(By.CLASS_NAME, "ds-virtual-list")
-                chrome_driver.execute_script("arguments[0].scrollTop = arguments[0].scrollHeight", list_e)
-                time.sleep(OPERATION_TIMEOUT)
-                max_key = check_staus(True)
-            if max_key < 0:
-                try:
-                    if '请开启新对话' in chrome_driver.find_element(By.CLASS_NAME, f"ds-virtual-list-visible-items").text[-15:]:
-                        print('达到对话长度上限')
-                        return max_key
-                except Exception as e:
-                    print(e)
+            logger.info('下拉到最底部时发生异常')
+        logger.info('开始处理异常')
+        logger.info('1. 判定是否需要开启新对话')
 
-                print(f'May still loading. {datetime.now().strftime("%d-%H%M%S")}')
-                with open(f'./llm_response/chat body {datetime.now().strftime("%H%M%S")}.html', 'w',
-                          encoding='utf8') as f:
-                    f.write(chrome_driver.find_element(By.CLASS_NAME, "ds-virtual-list-visible-items").get_property(
-                        "innerHTML"))
-                time.sleep(RETRY_INTERNAL)
-                max_key = check_staus(True)
-    print(f'返回 max_key = {max_key}')
-    return max_key
+        # retry_e = chrome_driver.find_element(By.CLASS_NAME,
+        #                                      "ds-icon-button.ds-icon-button--s.ds-icon-button--sizing-container")
+        last_response_text = ''
+        try:
+            last_response_text = chrome_driver.find_element(By.CLASS_NAME, f"ds-virtual-list-visible-items").text[-15:]
+        except Exception as e:
+            logger.info('Find ds-virtual-list-visible-items failed.')
+
+        if '请开启新对话' in last_response_text:
+            logger.info('达到对话长度上限')
+            return Status.NEED_NEW_CHAT, max_key
+
+        logger.info('2. 判定消息是否发送成功')
+        if '消息未能发送' in last_response_text:
+            logger.info('消息未能发送')
+            return Status.NEED_RESEND, max_key
+
+        logger.info('3. 判定是否需要重试')
+        retry_e = find_element_by_svg(r'./svg_retry.png')
+        sleep(RESPONSE_TIMEOUT/2)
+        retry_e.click()
+        time.sleep(RETRY_INTERNAL)
+        max_key = check_staus(True)
+
+        # except Exception as e:
+        #     print('无重试异常')
+        #     if not recheck:
+        #         print('获取scrollable元素')
+        #         list_e = chrome_driver.find_element(By.CLASS_NAME, "ds-virtual-list")
+        #         chrome_driver.execute_script("arguments[0].scrollTop = arguments[0].scrollHeight", list_e)
+        #         time.sleep(OPERATION_TIMEOUT)
+        #         max_key = check_staus(True)
+        #     if max_key < 0:
+        #         try:
+        #             if '请开启新对话' in chrome_driver.find_element(By.CLASS_NAME, f"ds-virtual-list-visible-items").text[-15:]:
+        #                 print('达到对话长度上限')
+        #                 return max_key
+        #         except Exception as e:
+        #             print(e)
+        #
+        #         print(f'May still loading. {datetime.now().strftime("%d-%H%M%S")}')
+        #         with open(f'./llm_response/chat body {datetime.now().strftime("%H%M%S")}.html', 'w',
+        #                   encoding='utf8') as f:
+        #             f.write(chrome_driver.find_element(By.CLASS_NAME, "ds-virtual-list-visible-items").get_property(
+        #                 "innerHTML"))
+        #         time.sleep(RETRY_INTERNAL)
+        #         max_key = check_staus(True)
+    logger.info(f'返回 max_key = {max_key}')
+    return Status.OK, max_key
 
 
 def send_prompt(prompt):
-    print('获取输入框元素')
+    logger.info('获取输入框元素')
     chat_input_e = WebDriverWait(chrome_driver, PAGE_LOAD_TIMEOUT).until(EC.presence_of_element_located((By.XPATH, "//textarea[contains(@placeholder, '发送消息')]")))
     # chat_input_e.send_keys(prompt)  #无法处理换行
     # chat_input_e.clear()  #无效
@@ -350,8 +390,18 @@ def send_prompt(prompt):
         time.sleep(0.1)
         pyperclip.copy(old_content)
 
-    time.sleep(OPERATION_TIMEOUT)
+    time.sleep(2)  # DEEPSEEK改成长文本转为附件的形式，附件上传需要时间
     chat_input_e.send_keys(Keys.ENTER)
+    #防止超时还未上传完的情况发生
+    try:
+        prompt_file_btn = chrome_driver.find_element(By.XPATH, '//button[normalize-space()="粘贴原文至输入框"]')
+        logger.info('未发送成功')
+        prompt_file_btn.click()
+        time.sleep(OPERATION_TIMEOUT)
+        chat_input_e.send_keys(Keys.ENTER)
+    except Exception as e:
+        pass
+
     time.sleep(OPERATION_TIMEOUT)
 
     time.sleep(10)
@@ -362,12 +412,12 @@ def chat_with_llm(message_id):
 
     try:
         chat_body = _get_chat_body()
-        print(f'获取message id={message_id} 的元素，{RESPONSE_TIMEOUT}s后超时')
+        logger.info(f'获取message id={message_id} 的元素，{RESPONSE_TIMEOUT}s后超时')
         response_e = WebDriverWait(chat_body, RESPONSE_TIMEOUT).until(
             EC.presence_of_element_located((By.CSS_SELECTOR, f"[data-virtual-list-item-key='{message_id}']")))
-        print(f'获取ds-flex，{RESPONSE_TIMEOUT}s后超时')
+        logger.info(f'获取ds-flex，{RESPONSE_TIMEOUT}s后超时')
         buttons_e = WebDriverWait(response_e, RESPONSE_TIMEOUT).until(EC.presence_of_element_located((By.CLASS_NAME, "ds-flex")))
-        print(f'获取文本元素，{RESPONSE_TIMEOUT}s后超时')
+        logger.info(f'获取文本元素，{RESPONSE_TIMEOUT}s后超时')
         response_content_e = WebDriverWait(response_e, RESPONSE_TIMEOUT).until(EC.presence_of_element_located((By.CSS_SELECTOR, ".ds-message>.ds-markdown")))
         # response_content = response_content_e.get_attribute('outerHTML')
         # response_content = response_content_e.get_property('outerHTML')
@@ -382,33 +432,33 @@ def chat_with_llm(message_id):
             time.sleep(10)
             content = response_e.get_property('innerHTML')
             #有可能在思考，导致response_content_e一直是空的，所以要用response_e来做比较
-            with open(f'./llm_response/llm response new.html', 'w',
-                      encoding='utf8') as f:
-                f.write(content)
-            with open(f'./llm_response/llm response.html', 'w',
-                      encoding='utf8') as f:
-                f.write(last_content)
+            # with open(f'./llm_response/llm response new.html', 'w',
+            #           encoding='utf8') as f:
+            #     f.write(content)
+            # with open(f'./llm_response/llm response.html', 'w',
+            #           encoding='utf8') as f:
+            #     f.write(last_content)
 
             if last_content == content:
-                print('前后两次获取的内容一致')
+                logger.info('前后两次获取的内容一致')
                 response_content = html_to_markdown(response_content_e.get_property('innerHTML'))
                 if len(response_content) == 0:
-                    print('有效内容为空')
+                    logger.info('有效内容为空')
                     continue
                 break
             else:
-                print('前后两次获取的内容不一致，内容生成中')
+                logger.info('前后两次获取的内容不一致，内容生成中')
                 last_content = content
 
-        response_content = response_content_e.get_property('innerHTML')
-        with open(f'./llm_response/llm response {datetime.now().strftime("%H%M%S")}.html', 'w', encoding='utf8') as f:
-            f.write(response_content)
+        # response_content = response_content_e.get_property('innerHTML')
+        # with open(f'./llm_response/llm response {datetime.now().strftime("%H%M%S")}.html', 'w', encoding='utf8') as f:
+        #     f.write(response_content)
     except Exception as e:
-        print(e)
+        logger.info(e)
         try:
             text = response_e.text
             if '已停止' in text[:3]:
-                print('尝试处理思考已停止异常')
+                logger.info('尝试处理思考已停止异常')
                 # buttons = buttons_e.find_elements(By.CLASS_NAME,
                 #                                   "ds-icon-button.ds-icon-button--m.ds-icon-button--sizing-container")
                 # buttons[1].click()
@@ -418,15 +468,15 @@ def chat_with_llm(message_id):
                 time.sleep(OPERATION_TIMEOUT)
                 # chat_with_llm(message_id) message id 会改变
         except Exception as e:
-            print('无思考已停止异常')
+            logger.info('无思考已停止异常')
         try:
             retry_btn = chrome_driver.find_element(By.XPATH, '//span[@class="ds-button__content" and contains(text(),"重试")]')
             retry_btn.click()
             time.sleep(OPERATION_TIMEOUT)
         except Exception as e:
-            print('无重试异常')
+            logger.info('无重试异常')
     try:
-        print('尝试处理长输出异常，点击继续输出')
+        logger.info('尝试处理长输出异常，点击继续输出')
         # continue_button_e = buttons_e.find_element(By.CLASS_NAME,
         #                                            "ds-atom-button.ds-basic-button.ds-basic-button--outlined")
         continue_button_e = buttons_e.find_element(By.XPATH, "//*[text()='继续生成']")
@@ -434,7 +484,7 @@ def chat_with_llm(message_id):
         time.sleep(OPERATION_TIMEOUT)
         chat_with_llm(message_id)
     except Exception as e:
-        print('无长输出异常')
+        logger.info('无长输出异常')
 
     return response_content
 
@@ -463,6 +513,7 @@ if __name__ == '__main__':
             cmd = request['cmd']
             need_send = 'reget' not in cmd
             response_content = 'failed'
+            logger.info(f'New request with cmd:{cmd} and prompt:{prompt[:30]}')
             try:
                 if 'new chat' in cmd:
                     new_chat()
@@ -470,13 +521,13 @@ if __name__ == '__main__':
                     socket.send_json(json.dumps({'response': 'done'}))
                     continue
                 while True:
-                    message_id = check_staus()
-                    if message_id < 0 or (message_id == 0 and 'complete prompt' not in cmd):
+                    status, message_id = check_staus()
+                    if status == Status.NEED_NEW_CHAT or (status == Status.NO_REPLY and 'complete prompt' not in cmd):
                         response_content = 'new chat'
                         new_chat()
                         need_init = True
                         break
-                    if need_send:
+                    if need_send or status == Status.NEED_RESEND:
                         send_prompt(prompt)
                         need_send = False
                         continue
@@ -484,5 +535,5 @@ if __name__ == '__main__':
                     break
 
             except Exception as e:
-                print(e)
+                logger.info(e)
             socket.send_json(json.dumps({'response': response_content}))
