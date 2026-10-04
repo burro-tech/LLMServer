@@ -1,6 +1,7 @@
 import json
 import os
 import sys
+import threading
 import time
 from code import interact
 from time import sleep
@@ -31,17 +32,38 @@ from logger import init_logger, logger
 
 LOCK_FILE = r"C:\Users\Administrator\AppData\Local\Temp\clipboard.lock"  # Windows
 
-init_logger(os.path.splitext(os.path.basename(__file__))[0])
-
-
-SOCKET_PORT = 1111
+SOCKET_PORT = 9981#1111
 PAGE_LOAD_TIMEOUT = 60
 OPERATION_TIMEOUT = 1
 RESPONSE_TIMEOUT = 600
 RETRY_INTERNAL = 60
 chrome_driver:webdriver.chrome.webdriver.WebDriver
 
-title_map = {7777:'1Server', 9992:'2Server', 9993:'3Server', 9994:'4Server', 6666:'CorrTuning Server', 9981:'Super_Server', 8888:'DB_Server', SOCKET_PORT:'test_Server'}
+title_map = {SOCKET_PORT:'test_Server', 7777:'1Server', 9992:'2Server', 9993:'3Server', 9994:'4Server', 6666:'CorrTuning Server', 9981:'Super_Server', 8888:'DB_Server'}
+
+DEBUG_MODE = False
+pause_event = threading.Event()   # set=运行中，clear=暂停
+pause_event.set()                 # 初始为运行状态
+lock = threading.Lock()
+def command_thread():
+    global DEBUG_MODE
+    while True:
+        try:
+            cmd = input("命令(debug, nodebug): ").strip().lower()
+        except EOFError:
+            continue
+
+        if cmd == "debug":
+            print("收到调试模式命令")
+            pause_event.set()  # 唤醒主线程以便退出
+            with lock:
+                DEBUG_MODE = True
+        elif cmd == "nodebug":
+            print("收到取消调试模式命令")
+            with lock:
+                DEBUG_MODE = False
+        else:
+            print("未知命令")
 
 from enum import Enum
 
@@ -67,12 +89,10 @@ def init_webdriver():
 
 def set_title_size(port=None):
     size = chrome_driver.get_window_size()
-    width = size["width"]
-    height = size["height"]
-    if size.get('width', 0) < 780:
-        width = 780
-    if size.get('height', 0) < 500:
-        height = 500
+    width = max(size.get('width', 0), 780)  #变动窗口大小，使得svg的位置刷新以便匹配
+    height = max(size.get('height', 0), 500)
+    if (width, height) == (size.get('width', 0), size.get('height', 0)):
+        width -= 10
     chrome_driver.set_window_size(width, height)
     if port in title_map:
         try:
@@ -107,7 +127,9 @@ def find_element_by_svg(target_svg):
 
     full_page_screenshot_bytes = chrome_driver.get_screenshot_as_png()
     full_img = Image.open(io.BytesIO(full_page_screenshot_bytes)).convert('L')
-    # full_img.save('test_full_image.png')
+    with lock:
+        if DEBUG_MODE:
+            full_img.save('test_full_image.png')
     all_svg_elements = chrome_driver.find_elements(By.XPATH, '//*[local-name()="svg"]')
 
     match_results = []
@@ -118,7 +140,9 @@ def find_element_by_svg(target_svg):
         xy2 = xy1[0]+svg.size['width']*dpr, xy1[1]+svg.size['height']*dpr
         image = full_img.crop(xy1+xy2)
         current_img = np.array(image)
-        # image.save(f'svg{xy1}.png')
+        with lock:
+            if DEBUG_MODE:
+                image.save(f'svg{xy1}.png')
         # ===================== 模板匹配核心（无特征点，永不报错） =====================
         # 缩放模板适配当前SVG大小
         current_height, current_width = current_img.shape[:2]
@@ -128,7 +152,9 @@ def find_element_by_svg(target_svg):
         result = cv2.matchTemplate(current_img, scaled_template, cv2.TM_CCOEFF_NORMED)
         similarity = cv2.minMaxLoc(result)[1]  # 相似度 0~1
         match_results.append((svg, similarity))
-        # print(f"SVG {xy1} → 匹配相似度：{round(similarity, 2)}")
+        with lock:
+            if DEBUG_MODE:
+                logger.info(f"SVG {xy1} → 匹配相似度：{round(similarity, 2)}")
         if similarity > COMFIRM_THRESHOLD:
             logger.info(f'{xy1}高相似度：{similarity}, 直接返回')
             return svg
@@ -141,10 +167,10 @@ def find_element_by_svg(target_svg):
         best_svg, best_score = match_results[0]
 
         if best_score >= MATCH_THRESHOLD:
-            logger.info(f"\n✅ 找到目标SVG！最佳匹配分数：{best_score}")
+            logger.info(f"✅ 找到目标SVG！最佳匹配分数：{best_score}")
             target_svg = best_svg
         else:
-            logger.info(f"\n❌ 匹配度不足（最低阈值：{MATCH_THRESHOLD}），未找到目标图形")
+            logger.info(f"❌ 匹配度不足（最低阈值：{MATCH_THRESHOLD}），未找到目标图形")
 
     # 6. 对目标SVG执行操作（示例）
     return target_svg
@@ -309,9 +335,12 @@ def check_staus(recheck=False):
         logger.info('no data-virtual-list-item-key elements，返回0')
         return Status.NO_REPLY, max_key
 
-    for element in item_key_elements:
-        key = int(element.get_attribute("data-virtual-list-item-key"))
-        max_key = key if abs(max_key) < abs(key) else max_key
+    # for element in item_key_elements:
+    #     key = int(element.get_attribute("data-virtual-list-item-key"))
+    #     max_key = key if abs(max_key) <= abs(key) else max_key
+    if len(item_key_elements) > 0:
+        max_key = int(item_key_elements[-1].get_attribute("data-virtual-list-item-key"))
+
     logger.info(f'max_key = {max_key}')
     if max_key < 0:
         # try:
@@ -342,10 +371,11 @@ def check_staus(recheck=False):
 
         logger.info('3. 判定是否需要重试')
         retry_e = find_element_by_svg(r'./svg_retry.png')
-        sleep(RESPONSE_TIMEOUT/2)
-        retry_e.click()
-        time.sleep(RETRY_INTERNAL)
-        max_key = check_staus(True)
+        if retry_e is not None:
+            sleep(RESPONSE_TIMEOUT / 2)
+            retry_e.click()
+            time.sleep(RETRY_INTERNAL)
+        _, max_key = check_staus(True)
 
         # except Exception as e:
         #     print('无重试异常')
@@ -496,6 +526,8 @@ if __name__ == '__main__':
         port = int(args[0])
     socket = zmq.Context().socket(zmq.REP)
     socket.bind(f"tcp://*:{port}")  # 绑定到所有接口的5555端口
+    init_logger(f'{os.path.splitext(os.path.basename(__file__))[0]}_{port if port not in title_map else title_map[port]}')
+    threading.Thread(target=command_thread, daemon=True).start()
 
     init_webdriver()
     login_llm()

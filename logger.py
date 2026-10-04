@@ -3,6 +3,9 @@ import os
 import sys
 from datetime import datetime, timedelta
 from pytz import timezone
+from logging.handlers import RotatingFileHandler
+
+MAX_BYTES = 1 * 1024 * 1024 * 1024   # 1 GB
 
 logger = logging.getLogger()
 
@@ -32,7 +35,13 @@ def init_logger(name):
     logger.name = name
     logger.setLevel(logging.DEBUG)
     sys.stdout.reconfigure(encoding='utf-8')
-    fh = logging.FileHandler(log_path(f'{name}_{get_time()}.log'),encoding='utf-8')
+    # fh = logging.FileHandler(log_path(f'{name}_{get_time()}.log'),encoding='utf-8')
+    fh = RotatingFileHandler(
+        log_path(f'{name}_{get_time()}.log'),
+        maxBytes=MAX_BYTES,
+        backupCount=2,
+        encoding="utf-8",
+    )
     fh.setLevel(logging.DEBUG)
 
     # 创建一个用于输出到控制台的处理器
