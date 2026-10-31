@@ -32,7 +32,7 @@ from logger import init_logger, logger
 
 LOCK_FILE = r"C:\Users\Administrator\AppData\Local\Temp\clipboard.lock"  # Windows
 
-SOCKET_PORT = 9981#1111
+SOCKET_PORT = 9993#1111
 PAGE_LOAD_TIMEOUT = 60
 OPERATION_TIMEOUT = 1
 RESPONSE_TIMEOUT = 600
@@ -72,6 +72,7 @@ class Status(Enum):
     NO_REPLY = 0      # 没有回复
     NEED_NEW_CHAT = -1 # 需要新建对话
     NEED_RESEND = -2   # 需要重发
+    IN_NEW_CHAT = -3   # 在新对话中
 
 def init_webdriver():
     global chrome_driver
@@ -81,7 +82,7 @@ def init_webdriver():
     # 初始化Chrome驱动
     chrome_driver = webdriver.Chrome(
         #service=Service(ChromeDriverManager().install()),
-        service=Service(executable_path=r"C:\tools\webdriver\chromedriver_151.exe"), # C:\Users\Administrator\.cache\selenium\chromedriver\win64
+        service=Service(executable_path=r"C:\tools\webdriver\chromedriver_158.exe"), # C:\Users\Administrator\.cache\selenium\chromedriver\win64
         options=chrome_options
     )
     chrome_driver.implicitly_wait(10)  # 全局隐式等待
@@ -89,10 +90,10 @@ def init_webdriver():
 
 def set_title_size(port=None):
     size = chrome_driver.get_window_size()
-    width = max(size.get('width', 0), 780)  #变动窗口大小，使得svg的位置刷新以便匹配
+    width = max(size.get('width', 0), 880)  #变动窗口大小，使得svg的位置刷新以便匹配
     height = max(size.get('height', 0), 500)
     if (width, height) == (size.get('width', 0), size.get('height', 0)):
-        width -= 10
+        width -= 100
     chrome_driver.set_window_size(width, height)
     if port in title_map:
         try:
@@ -268,7 +269,7 @@ def login_llm():
     # username_input_e = chrome_driver.find_element(By.XPATH, "//input[contains(@placeholder, '输入手机号')]")
     code_input_e = chrome_driver.find_element(By.XPATH, "//input[contains(@placeholder, '输入密码')]")
 
-    username_input_e.send_keys('18138879894')
+    username_input_e.send_keys('18922839345')  #18138879894
     time.sleep(OPERATION_TIMEOUT)
     code_input_e.send_keys('agent.2025')
     time.sleep(OPERATION_TIMEOUT)
@@ -332,7 +333,7 @@ def check_staus(recheck=False):
         logger.info('获取含key元素')
         item_key_elements = chrome_driver.find_elements(By.CSS_SELECTOR, f"[data-virtual-list-item-key]")
     except Exception as e:
-        logger.info('no data-virtual-list-item-key elements，返回0')
+        logger.info('[data-virtual-list-item-key] 查找异常，返回0')
         return Status.NO_REPLY, max_key
 
     # for element in item_key_elements:
@@ -340,6 +341,9 @@ def check_staus(recheck=False):
     #     max_key = key if abs(max_key) <= abs(key) else max_key
     if len(item_key_elements) > 0:
         max_key = int(item_key_elements[-1].get_attribute("data-virtual-list-item-key"))
+    else:
+        logger.info('no data-virtual-list-item-key elements，返回0')
+        return Status.NO_REPLY, max_key
 
     logger.info(f'max_key = {max_key}')
     if max_key < 0:
@@ -520,7 +524,7 @@ def chat_with_llm(message_id):
 
 
 if __name__ == '__main__':
-    port = SOCKET_PORT
+    port = 9993
     args = sys.argv[1:]
     if len(args) > 0:
         port = int(args[0])
@@ -531,6 +535,7 @@ if __name__ == '__main__':
 
     init_webdriver()
     login_llm()
+    input()
     chat_body = None
     need_init = True
     while True:
@@ -556,8 +561,9 @@ if __name__ == '__main__':
                     status, message_id = check_staus()
                     if status == Status.NEED_NEW_CHAT or (status == Status.NO_REPLY and 'complete prompt' not in cmd):
                         response_content = 'new chat'
-                        new_chat()
-                        need_init = True
+                        if status == Status.NEED_NEW_CHAT:
+                            new_chat()
+                            need_init = True
                         break
                     if need_send or status == Status.NEED_RESEND:
                         send_prompt(prompt)
